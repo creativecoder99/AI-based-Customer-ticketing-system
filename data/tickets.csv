@@ -1,0 +1,11 @@
+id,message,expected_action,expected_source
+1,"I received my ₹4,500 ceramic dinner set yesterday, but the bowls arrived completely shattered inside the box. How do I proceed?",REQUEST_PHOTOS,damaged_goods.md
+2,"My delivery arrived 3 hours ago with a chipped coffee mug worth ₹450. I would like a refund please.",APPROVE_REFUND,damaged_goods.md
+3,"I received my glass vase 6 days ago and just opened the box today to find it broken into pieces. Can I get a replacement?",REJECT_REQUEST,damaged_goods.md
+4,"I purchased a winter jacket delivered 12 days ago. It doesn't fit well. It is completely unused with tags still attached. I want to return it.",APPROVE_RETURN,returns.md
+5,"I bought running shoes delivered 42 days ago. I realized I don't use them and want to return them.",REJECT_REQUEST,returns.md
+6,"I bought a designer shirt on the Final Sale clearance event last week. I want to return it for a full refund.",REJECT_REQUEST,returns.md
+7,"My authorized return package #RT-8921 was received and verified by your warehouse inspection team 2 days ago. When will I get my refund?",APPROVE_REFUND,refunds.md
+8,"My courier tracking has had zero scan updates or movement for the past 8 consecutive business days. It seems stuck.",EXPEDITE_SHIPPING,shipping.md
+9,"Hey, my package hasn't arrived yet! What is taking so long?",NEEDS_MORE_INFORMATION,shipping.md
+10,"I want to return something I bought, please help me out.",NEEDS_MORE_INFORMATION,returns.md
