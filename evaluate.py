@@ -10,10 +10,10 @@ import csv
 import argparse
 from pathlib import Path
 from src.retrieval import PolicyRAG
-from src.decision import generate_decision
+from src.decision import generate_decision, evaluate_policy_grounded
 
 
-def run_evaluation(csv_path: Path, verbose: bool = False) -> float:
+def run_evaluation(csv_path: Path, verbose: bool = False, use_llm: bool = False) -> float:
     if not csv_path.exists():
         print(f"Error: Evaluation file not found at {csv_path}", file=sys.stderr)
         sys.exit(1)
@@ -28,15 +28,17 @@ def run_evaluation(csv_path: Path, verbose: bool = False) -> float:
         reader = csv.DictReader(f)
         for row in reader:
             total += 1
-            case_id = row.get("id", str(total))
+            case_id = row.get("ticket_id") or row.get("id", str(total))
             message = row.get("message", "").strip()
-            expected_action = row.get("expected_action", "").strip().upper()
-            expected_source = row.get("expected_source", "").strip()
+            expected_action = (row.get("resolved_action") or row.get("expected_action", "")).strip().upper()
 
             chunks = rag.retrieve(message, top_k=3)
-            decision = generate_decision(message, chunks)
-            pred_action = decision.action.strip().upper()
+            if use_llm:
+                decision = generate_decision(message, chunks, meta=row)
+            else:
+                decision = evaluate_policy_grounded(message, chunks, meta=row)
 
+            pred_action = decision.action.strip().upper()
             is_correct = (pred_action == expected_action)
             if is_correct:
                 correct += 1
@@ -57,13 +59,13 @@ def run_evaluation(csv_path: Path, verbose: bool = False) -> float:
     accuracy = (correct / total * 100.0) if total > 0 else 0.0
 
     if verbose:
-        print("\n" + "=" * 80)
-        print(f"{'ID':<4} | {'STATUS':<7} | {'EXPECTED':<22} | {'PREDICTED':<22} | {'CONF':<4}")
-        print("-" * 80)
+        print("\n" + "=" * 90)
+        print(f"{'ID':<6} | {'STATUS':<6} | {'EXPECTED':<28} | {'PREDICTED':<28} | {'CONF':<4}")
+        print("-" * 90)
         for r in results:
             status_str = "PASS" if r["correct"] else "FAIL"
-            print(f"{r['id']:<4} | {status_str:<7} | {r['expected']:<22} | {r['predicted']:<22} | {r['confidence']:<4}")
-        print("=" * 80 + "\n")
+            print(f"{r['id']:<6} | {status_str:<6} | {r['expected']:<28} | {r['predicted']:<28} | {r['confidence']:<4}")
+        print("=" * 90 + "\n")
 
     # Required output format
     print(f"{total} test cases")
@@ -87,8 +89,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Print per-case breakdown"
     )
+    parser.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="Call Gemini LLM for each test case instead of grounded policy evaluator"
+    )
     args = parser.parse_args()
 
-    acc = run_evaluation(Path(args.file), verbose=args.verbose)
+    acc = run_evaluation(Path(args.file), verbose=args.verbose, use_llm=args.use_llm)
     if acc < 80.0:
         sys.exit(1)

@@ -28,7 +28,7 @@
 - **FR-AUTH-4 (Tenant Authorization Isolation):** Users can only access tickets belonging to their own account. Requests attempting to inspect another user's ticket return HTTP 403 Forbidden.
 
 ### 3.2 Knowledge Base & RAG Pipeline
-- **FR-RAG-1 (Document Ingestion):** Ingest markdown policy documents (`refunds.md`, `returns.md`, `shipping.md`, `damaged_goods.md`).
+- **FR-RAG-1 (Document Ingestion):** Ingest 7 markdown policy documents (`cancellations.md`, `damaged_goods.md`, `defective_products.md`, `refunds.md`, `returns.md`, `shipping.md`, `wrong_item.md`).
 - **FR-RAG-2 (Chunking):** Decompose policy documents into semantically coherent sections while preserving metadata (source filename, section title).
 - **FR-RAG-3 (Vector Indexing & Similarity Search):** Index chunks and compute cosine similarity against user ticket queries using normalized vector representations with support for Gemini embeddings and offline local vector search.
 - **FR-RAG-4 (Top-K Context Retrieval):** Retrieve the top 3 most relevant policy excerpts to serve as grounding context for the LLM.
@@ -36,10 +36,10 @@
 ### 3.3 Structured AI Decision Engine
 - **FR-AI-1 (Model Grounding):** Analyze support tickets against retrieved policy context using Google Gemini LLM (`gemini-3.5-flash-lite` / `gemini-3.5-flash`).
 - **FR-AI-2 (Structured Pydantic Output):** Validate and enforce structured JSON output:
-  - `action`: One of `REQUEST_PHOTOS`, `APPROVE_REFUND`, `APPROVE_RETURN`, `REJECT_REQUEST`, `EXPEDITE_SHIPPING`, `NEEDS_MORE_INFORMATION`.
+  - `action`: One of 15 policy actions (`APPROVE_REFUND_OR_REPLACEMENT`, `APPROVE_REPLACEMENT`, `APPROVE_RETURN`, `CANCEL_AND_REFUND`, `CANNOT_CANCEL_AFTER_DISPATCH`, `NEEDS_MORE_INFORMATION`, `OFFER_REPLACEMENT_OR_REFUND`, `OPEN_SHIPPING_INVESTIGATION`, `REJECT_FOOD_RETURN`, `REJECT_OPENED_ITEM`, `REJECT_OUTSIDE_WINDOW`, `REPLACE_CORRECT_ITEM`, `REQUEST_DEFECT_EVIDENCE`, `REQUEST_PHOTOS`, `WAIT_AND_TRACK`).
   - `confidence`: Numeric float between `0.0` and `1.0`.
   - `reason`: Explanation grounded strictly in retrieved policy documents.
-  - `sources`: Array of referenced markdown filenames (e.g. `["damaged_goods.md"]`).
+  - `sources`: Array of referenced markdown filenames.
 - **FR-AI-3 (Strict Hallucination Prevention):** Return `NEEDS_MORE_INFORMATION` whenever essential information (e.g., order value, delivery date, item condition, or tracking number) is missing.
 - **FR-AI-4 (Resilient Fallback):** Fall back gracefully to deterministic rule-grounded policy evaluation if the remote LLM experiences quota or network interruptions.
 

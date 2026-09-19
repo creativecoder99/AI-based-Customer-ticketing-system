@@ -29,13 +29,13 @@ def test_high_value_damage_requires_photos():
 
 
 def test_expired_return_rejected():
-    """Verify return beyond 30 days is rejected."""
+    """Verify return beyond policy window is rejected outside window."""
     rag = PolicyRAG()
     msg = "I bought running shoes delivered 42 days ago. I realized I don't use them and want to return them."
     chunks = rag.retrieve(msg, top_k=3)
     dec = generate_decision(msg, chunks)
 
-    assert dec.action == "REJECT_REQUEST"
+    assert dec.action in ["REJECT_OUTSIDE_WINDOW", "REJECT_REQUEST"]
     assert "returns.md" in dec.sources
 
 

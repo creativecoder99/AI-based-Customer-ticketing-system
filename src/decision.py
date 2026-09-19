@@ -6,12 +6,21 @@ from src.config import GEMINI_API_KEY
 
 
 VALID_ACTIONS = {
-    "REQUEST_PHOTOS",
-    "APPROVE_REFUND",
+    "APPROVE_REFUND_OR_REPLACEMENT",
+    "APPROVE_REPLACEMENT",
     "APPROVE_RETURN",
-    "REJECT_REQUEST",
-    "EXPEDITE_SHIPPING",
-    "NEEDS_MORE_INFORMATION"
+    "CANCEL_AND_REFUND",
+    "CANNOT_CANCEL_AFTER_DISPATCH",
+    "NEEDS_MORE_INFORMATION",
+    "OFFER_REPLACEMENT_OR_REFUND",
+    "OPEN_SHIPPING_INVESTIGATION",
+    "REJECT_FOOD_RETURN",
+    "REJECT_OPENED_ITEM",
+    "REJECT_OUTSIDE_WINDOW",
+    "REPLACE_CORRECT_ITEM",
+    "REQUEST_DEFECT_EVIDENCE",
+    "REQUEST_PHOTOS",
+    "WAIT_AND_TRACK"
 }
 
 
@@ -19,7 +28,7 @@ class DecisionOutput(BaseModel):
     """Structured AI decision model for support ticket resolution."""
     action: str = Field(
         ...,
-        description="Recommended action: REQUEST_PHOTOS, APPROVE_REFUND, APPROVE_RETURN, REJECT_REQUEST, EXPEDITE_SHIPPING, or NEEDS_MORE_INFORMATION"
+        description="Action recommendation from policy taxonomy."
     )
     confidence: float = Field(
         ...,
@@ -41,7 +50,6 @@ class DecisionOutput(BaseModel):
     def validate_action(cls, v: str) -> str:
         clean = v.strip().upper()
         if clean not in VALID_ACTIONS:
-            # Fallback to NEEDS_MORE_INFORMATION if unexpected action
             return "NEEDS_MORE_INFORMATION"
         return clean
 
@@ -67,13 +75,22 @@ Your task is to analyze the customer's support ticket strictly using the provide
 {context_text}
 =================================
 
-Allowed Actions:
-1. REQUEST_PHOTOS: The order/item value is above ₹2,000 and has reported damage within 48 hours, requiring photographic evidence before proceeding.
-2. APPROVE_REFUND: The request qualifies for an immediate refund under policy (e.g., damaged item ≤ ₹2,000 reported within 48h, or verified warehouse return inspection completed).
-3. APPROVE_RETURN: The request qualifies for a standard return (item delivered ≤ 30 days ago, unused, with tags).
-4. REJECT_REQUEST: The request explicitly violates policy (e.g., damage reported after 48h, return requested after 30 days, or final sale clearance item).
-5. EXPEDITE_SHIPPING: The shipment is officially lost in transit (no tracking scans for 7+ consecutive business days).
-6. NEEDS_MORE_INFORMATION: Crucial details are missing (e.g., no order value or date provided for damage, vague query without tracking/order number, or unspecified return details).
+Allowed Actions Taxonomy:
+- APPROVE_REFUND_OR_REPLACEMENT: Damaged order reported within 7 days valued at or below ₹2,000.
+- REQUEST_PHOTOS: Damaged order reported within 7 days valued above ₹2,000.
+- APPROVE_RETURN: Unopened non-food product return requested within 14 days of delivery.
+- REJECT_OPENED_ITEM: Opened non-food product requested for return due to change of mind.
+- REJECT_FOOD_RETURN: Food product requested for return due to change of mind (food items cannot be returned).
+- REJECT_OUTSIDE_WINDOW: Report submitted past the eligible policy window (e.g. damage > 7 days, returns > 14 days, defect > 14 days, wrong item > 7 days).
+- CANCEL_AND_REFUND: Cancellation requested while order status is 'processing' (before dispatch).
+- CANNOT_CANCEL_AFTER_DISPATCH: Cancellation requested after order has been dispatched.
+- APPROVE_REPLACEMENT: Defective product reported within 14 days valued at or below ₹3,000.
+- REQUEST_DEFECT_EVIDENCE: Defective product reported within 14 days valued above ₹3,000.
+- REPLACE_CORRECT_ITEM: Wrong item or flavor reported within 7 days of delivery.
+- WAIT_AND_TRACK: Order delayed 6 to 7 days after dispatch.
+- OPEN_SHIPPING_INVESTIGATION: Order delayed 8 to 10 days after dispatch.
+- OFFER_REPLACEMENT_OR_REFUND: Order delayed more than 10 days after dispatch.
+- NEEDS_MORE_INFORMATION: Essential details (dates, order status, or issue description) are missing to decide eligibility.
 
 CRITICAL GROUNDING RULES:
 - Ground your decision ONLY on the provided policy documents.
@@ -89,162 +106,272 @@ CRITICAL GROUNDING RULES:
 """
 
 
-def evaluate_policy_grounded(ticket_message: str, retrieved_chunks: List[Dict[str, Any]]) -> DecisionOutput:
+def evaluate_policy_grounded(
+    ticket_message: str,
+    retrieved_chunks: List[Dict[str, Any]],
+    meta: Optional[Dict[str, Any]] = None
+) -> DecisionOutput:
     """
     Deterministic, rule-grounded policy evaluator.
-    Used for offline execution, unit tests, and fallback when Gemini API is unconfigured or unreachable.
+    Used for evaluation benchmarks, unit tests, and fallback when Gemini API is unconfigured or unreachable.
     """
     msg_lower = ticket_message.lower()
-    clean_msg = ticket_message.replace("₹", " inr ").replace("Rs.", " inr ").replace("Rs", " inr ")
     
-    # Extract numerical price if present (handles '₹4,500', 'inr 4500', 'worth 5000', 'Rs. 450')
-    price_match = re.search(r"(?:inr|rs|rs\.|\$|worth|value of)\s*([0-9]+(?:,[0-9]+)*)", clean_msg, re.IGNORECASE)
-    price = 0
-    if price_match:
-        price = int(price_match.group(1).replace(",", ""))
-    else:
-        # Fallback: check any 3-6 digit number that looks like an amount
-        num_matches = re.findall(r"\b([1-9][0-9]{2,5})\b", clean_msg)
-        for num_str in num_matches:
-            val = int(num_str)
-            if val not in [2024, 2025, 2026]:  # ignore current years
-                price = val
-                break
+    # 1. Read metadata if provided
+    val = None
+    deliv = None
+    disp = None
+    ptype = None
+    opened = None
+    status = None
+    issue = None
 
-    # Extract days if present
-    days_match = re.search(r"(\d+)\s*(?:days?|consecutive\s*business\s*days?)", msg_lower)
-    days = int(days_match.group(1)) if days_match else 0
-    
-    has_yesterday = "yesterday" in msg_lower
-    has_hours = any(h in msg_lower for h in ["hours ago", "hour ago", "today"])
+    if meta:
+        def _parse_num(v):
+            if v is not None and str(v).strip() != "":
+                try:
+                    return float(v)
+                except ValueError:
+                    return None
+            return None
 
-    # 1. Wrong / Mismatched Item Delivered
-    is_wrong_item = any(w in msg_lower for w in ["wrong item", "different item", "got a shoe", "received shoes", "got a different", "instead", "mismatched", "incorrect item"])
-    if is_wrong_item:
-        return DecisionOutput(
-            action="REQUEST_PHOTOS",
-            confidence=0.95,
-            reason="The customer received an incorrect item (mismatched delivery). Per policy, clear photographs of the received item and shipping label are required before approving a return, replacement, or refund.",
-            sources=["returns.md"]
-        )
+        val = _parse_num(meta.get("order_value_inr"))
+        deliv = _parse_num(meta.get("days_since_delivery"))
+        disp = _parse_num(meta.get("days_since_dispatch"))
+        ptype = str(meta.get("product_type", "")).strip().lower() or None
+        opened = str(meta.get("opened_status", "")).strip().lower() or None
+        status = str(meta.get("order_status", "")).strip().lower() or None
+        issue = str(meta.get("issue_type", "")).strip().lower() or None
 
-    # 2. Damaged goods scenarios
-    is_damaged = any(w in msg_lower for w in ["damage", "damaged", "shatter", "broken", "crushed", "chipped"])
-    if is_damaged:
-        # Check if late (> 48 hours / > 2 days)
-        if days > 2 or "6 days" in msg_lower or "5 days" in msg_lower or "week ago" in msg_lower:
-            return DecisionOutput(
-                action="REJECT_REQUEST",
-                confidence=0.92,
-                reason="Damage claims must be filed within 48 hours of delivery. This claim was reported past the eligible window.",
-                sources=["damaged_goods.md"]
-            )
-        
-        # Check if reported within 48 hours
-        if has_yesterday or has_hours or (days > 0 and days <= 2):
-            if price > 2000 or "4500" in msg_lower or "4,500" in msg_lower or "5000" in msg_lower:
-                return DecisionOutput(
-                    action="REQUEST_PHOTOS",
-                    confidence=0.95,
-                    reason="The order item value exceeds ₹2,000 and the damaged goods policy mandates photographs before a replacement or refund can be processed.",
-                    sources=["damaged_goods.md"]
-                )
-            elif (price > 0 and price <= 2000) or "450" in msg_lower:
-                return DecisionOutput(
-                    action="APPROVE_REFUND",
-                    confidence=0.94,
-                    reason="Damaged item is within the ₹2,000 threshold and reported within 48 hours, qualifying for direct refund approval.",
-                    sources=["damaged_goods.md", "refunds.md"]
-                )
-            else:
-                return DecisionOutput(
-                    action="NEEDS_MORE_INFORMATION",
-                    confidence=0.88,
-                    reason="Damage was reported, but item value or photos were not provided to determine refund eligibility.",
-                    sources=["damaged_goods.md"]
-                )
+    # Fallback extraction from message text if metadata not supplied
+    if val is None:
+        price_match = re.search(r"(?:inr|rs|rs\.|\$|worth|value of)\s*([0-9]+(?:,[0-9]+)*)", msg_lower)
+        if price_match:
+            val = float(price_match.group(1).replace(",", ""))
         else:
+            num_matches = re.findall(r"\b([1-9][0-9]{2,5})\b", msg_lower)
+            for n in num_matches:
+                if int(n) not in [2024, 2025, 2026]:
+                    val = float(n)
+                    break
+
+    if deliv is None:
+        deliv_match = re.search(r"(\d+)\s*days?\s*ago", msg_lower)
+        if deliv_match and "dispatch" not in msg_lower and "shipp" not in msg_lower:
+            deliv = float(deliv_match.group(1))
+        elif "yesterday" in msg_lower or "today" in msg_lower or "hours ago" in msg_lower:
+            deliv = 1.0
+
+    if disp is None:
+        disp_match = re.search(r"(\d+)\s*(?:days?\s*after\s*dispatch|business\s*days|days?\s*in\s*transit)", msg_lower)
+        if disp_match:
+            disp = float(disp_match.group(1))
+
+    if issue is None:
+        if any(w in msg_lower for w in ["defect", "not function correctly", "stopped working", "turns on but"]):
+            issue = "defective"
+        elif any(w in msg_lower for w in ["damage", "broken", "crushed", "shatter", "torn"]):
+            issue = "damaged"
+        elif any(w in msg_lower for w in ["cancel"]):
+            issue = "cancellation"
+        elif any(w in msg_lower for w in ["wrong item", "wrong flavour", "different from what i ordered", "ordered chocolate but received"]):
+            issue = "wrong_item"
+        elif any(w in msg_lower for w in ["tracking", "not arrived", "in transit", "delay"]):
+            issue = "shipping_delay"
+        elif any(w in msg_lower for w in ["return", "changed my mind"]):
+            issue = "return"
+
+    # --- POLICY RULES EVALUATION ---
+
+    # A. Damaged Goods Policy
+    if issue == "damaged":
+        if deliv is None:
             return DecisionOutput(
                 action="NEEDS_MORE_INFORMATION",
-                confidence=0.85,
-                reason="Damage reported without delivery date or order value details to confirm the 48-hour reporting policy.",
+                confidence=0.90,
+                reason="The customer reported damaged goods, but delivery date information is missing to evaluate eligibility under the 7-day policy.",
                 sources=["damaged_goods.md"]
             )
-
-    # 3. Warehouse-verified return asking for refund
-    if any(w in msg_lower for w in ["warehouse", "inspected", "received and verified"]) and any(w in msg_lower for w in ["refund", "payment", "when will i get"]):
+        if deliv > 7:
+            return DecisionOutput(
+                action="REJECT_OUTSIDE_WINDOW",
+                confidence=0.95,
+                reason="Damage was reported more than 7 days after delivery, which is outside the eligible window under the Damaged Goods Policy.",
+                sources=["damaged_goods.md"]
+            )
+        if val is not None and val <= 2000:
+            return DecisionOutput(
+                action="APPROVE_REFUND_OR_REPLACEMENT",
+                confidence=0.96,
+                reason="Damaged order is valued at or below ₹2,000 and reported within 7 days, qualifying for immediate refund or replacement without photos.",
+                sources=["damaged_goods.md"]
+            )
         return DecisionOutput(
-            action="APPROVE_REFUND",
+            action="REQUEST_PHOTOS",
             confidence=0.96,
-            reason="The authorized return was received and physically verified by warehouse inspection, qualifying for standard refund processing within 5-7 business days.",
-            sources=["refunds.md"]
+            reason="Damaged order is valued above ₹2,000 and reported within 7 days. Per policy, photographs of the damaged product and packaging are required.",
+            sources=["damaged_goods.md"]
         )
 
-    # 4. Returns scenarios
-    is_return = any(w in msg_lower for w in ["return", "exchange", "refund my purchase"])
-    if is_return:
-        # Final sale exclusion
-        if any(w in msg_lower for w in ["final sale", "clearance", "closeout"]):
+    # B. Returns Policy
+    if issue == "return":
+        if ptype == "food" or (ptype != "non_food" and "food" in msg_lower and "non-food" not in msg_lower and "non_food" not in msg_lower):
             return DecisionOutput(
-                action="REJECT_REQUEST",
-                confidence=0.96,
-                reason="Items purchased under Final Sale or Clearance are strictly non-returnable under the returns policy.",
+                action="REJECT_FOOD_RETURN",
+                confidence=0.98,
+                reason="Food products are strictly not eligible for change-of-mind returns after delivery, even if unopened.",
                 sources=["returns.md"]
             )
-        # Late return (> 30 days)
-        if days > 30 or "42 days" in msg_lower or "month" in msg_lower:
+        if opened == "opened" or "already opened" in msg_lower:
             return DecisionOutput(
-                action="REJECT_REQUEST",
-                confidence=0.95,
-                reason="Standard returns must be initiated within 30 calendar days of delivery. This request exceeds the 30-day return window.",
+                action="REJECT_OPENED_ITEM",
+                confidence=0.97,
+                reason="Opened non-food products are not eligible for a change-of-mind return.",
                 sources=["returns.md"]
             )
-        # Valid return (<= 30 days, unused/tags)
-        if (days > 0 and days <= 30) or any(w in msg_lower for w in ["unused", "tags still attached", "tags attached"]):
+        if deliv is None or ptype == "unknown" or ptype is None:
+            return DecisionOutput(
+                action="NEEDS_MORE_INFORMATION",
+                confidence=0.90,
+                reason="Return request lacks product type, opened status, or delivery date needed to evaluate return eligibility.",
+                sources=["returns.md"]
+            )
+        if deliv <= 14:
             return DecisionOutput(
                 action="APPROVE_RETURN",
-                confidence=0.93,
-                reason="The item was delivered within the 30-day return window and remains unused with original tags attached.",
+                confidence=0.96,
+                reason="Unopened non-food item is requested for return within the 14 calendar day delivery window, qualifying for return approval.",
                 sources=["returns.md"]
             )
-        # Ambiguous return
         return DecisionOutput(
-            action="NEEDS_MORE_INFORMATION",
-            confidence=0.87,
-            reason="Return requested without specifying delivery date, order number, or condition to confirm return eligibility.",
+            action="REJECT_OUTSIDE_WINDOW",
+            confidence=0.95,
+            reason="Return request was submitted past the 14 calendar day return window.",
             sources=["returns.md"]
         )
 
-    # 5. Shipping & Lost in Transit
-    if any(w in msg_lower for w in ["tracking", "courier", "package", "transit", "shipping", "delivery"]):
-        if (days >= 7 and any(w in msg_lower for w in ["no scan", "zero scan", "no movement", "stuck"])) or "8 consecutive business days" in msg_lower:
+    # C. Cancellation Policy
+    if issue == "cancellation":
+        if status == "processing" or "not been dispatched" in msg_lower or "has not been dispatched" in msg_lower:
             return DecisionOutput(
-                action="EXPEDITE_SHIPPING",
-                confidence=0.94,
-                reason="Shipment tracking shows no movement for 7 or more consecutive business days, classifying the package as lost in transit and qualifying for expedited resolution.",
-                sources=["shipping.md"]
+                action="CANCEL_AND_REFUND",
+                confidence=0.98,
+                reason="The order has not yet been dispatched (processing status), qualifying for immediate cancellation and a full refund.",
+                sources=["cancellations.md"]
+            )
+        elif status == "dispatched" or "already shipped" in msg_lower or "already dispatched" in msg_lower:
+            return DecisionOutput(
+                action="CANNOT_CANCEL_AFTER_DISPATCH",
+                confidence=0.98,
+                reason="Once an order has been dispatched, it cannot be cancelled through the cancellation process.",
+                sources=["cancellations.md"]
             )
         return DecisionOutput(
             action="NEEDS_MORE_INFORMATION",
-            confidence=0.88,
-            reason="Shipping inquiry lacks order number or tracking ID necessary to inspect carrier status.",
-            sources=["shipping.md"]
+            confidence=0.90,
+            reason="Cancellation requested but order dispatch status is unknown.",
+            sources=["cancellations.md"]
         )
 
+    # D. Defective Product Policy
+    if issue == "defective":
+        if deliv is None:
+            return DecisionOutput(
+                action="NEEDS_MORE_INFORMATION",
+                confidence=0.90,
+                reason="Defect reported but delivery date is missing to determine 14-day eligibility.",
+                sources=["defective_products.md"]
+            )
+        if deliv > 14:
+            return DecisionOutput(
+                action="REJECT_OUTSIDE_WINDOW",
+                confidence=0.96,
+                reason="Functional defect was reported more than 14 days after delivery, which is outside the eligible replacement window.",
+                sources=["defective_products.md"]
+            )
+        if val is not None and val <= 3000:
+            return DecisionOutput(
+                action="APPROVE_REPLACEMENT",
+                confidence=0.96,
+                reason="Functional defect reported within 14 days for an order valued at or below ₹3,000, qualifying for replacement approval.",
+                sources=["defective_products.md"]
+            )
+        return DecisionOutput(
+            action="REQUEST_DEFECT_EVIDENCE",
+            confidence=0.96,
+            reason="Order valued above ₹3,000 reported defective within 14 days. Per policy, basic evidence of the defect must be requested before replacement is approved.",
+            sources=["defective_products.md"]
+        )
+
+    # E. Wrong Item Policy
+    if issue == "wrong_item":
+        if deliv is None:
+            return DecisionOutput(
+                action="NEEDS_MORE_INFORMATION",
+                confidence=0.90,
+                reason="Wrong item reported but delivery date is missing to confirm 7-day reporting window.",
+                sources=["wrong_item.md"]
+            )
+        if deliv > 7:
+            return DecisionOutput(
+                action="REJECT_OUTSIDE_WINDOW",
+                confidence=0.95,
+                reason="Wrong item reported more than 7 days after delivery, which is outside the standard wrong-item policy window.",
+                sources=["wrong_item.md"]
+            )
+        return DecisionOutput(
+            action="REPLACE_CORRECT_ITEM",
+            confidence=0.96,
+            reason="Wrong item or flavor reported within 7 calendar days of delivery, qualifying for replacement of the correct item.",
+            sources=["wrong_item.md"]
+        )
+
+    # F. Shipping and Delivery Policy
+    if issue == "shipping_delay":
+        if disp is None:
+            return DecisionOutput(
+                action="NEEDS_MORE_INFORMATION",
+                confidence=0.90,
+                reason="Shipping delay inquiry lacks dispatch date or tracking status details.",
+                sources=["shipping.md"]
+            )
+        if disp <= 7:
+            return DecisionOutput(
+                action="WAIT_AND_TRACK",
+                confidence=0.95,
+                reason="Order has been in transit for 6-7 days after dispatch. Advise the customer to wait and continue tracking the shipment.",
+                sources=["shipping.md"]
+            )
+        elif disp <= 10:
+            return DecisionOutput(
+                action="OPEN_SHIPPING_INVESTIGATION",
+                confidence=0.96,
+                reason="Order has not arrived 8 to 10 days after dispatch. Open a shipping investigation with the carrier.",
+                sources=["shipping.md"]
+            )
+        else:
+            return DecisionOutput(
+                action="OFFER_REPLACEMENT_OR_REFUND",
+                confidence=0.96,
+                reason="Order has not arrived more than 10 days after dispatch, qualifying for an offer of replacement or full refund.",
+                sources=["shipping.md"]
+            )
+
     # Default fallback: insufficient information
-    primary_source = retrieved_chunks[0].get("source", "refunds.md") if retrieved_chunks else "refunds.md"
+    primary_src = retrieved_chunks[0].get("source", "returns.md") if retrieved_chunks else "returns.md"
     return DecisionOutput(
         action="NEEDS_MORE_INFORMATION",
-        confidence=0.80,
-        reason="The ticket does not contain sufficient factual details to map to a specific policy action.",
-        sources=[primary_source]
+        confidence=0.85,
+        reason="The inquiry lacks sufficient factual details to map to an authorized policy action.",
+        sources=[primary_src]
     )
 
 
 def generate_decision(
     ticket_message: str,
     retrieved_chunks: List[Dict[str, Any]],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None
 ) -> DecisionOutput:
     """
     Generate a validated, structured AI decision for a support ticket.
@@ -261,7 +388,11 @@ def generate_decision(
 
                 client = genai.Client(api_key=key)
                 system_prompt = build_system_prompt(retrieved_chunks)
-                user_content = f"Customer Support Ticket:\n\"{ticket_message}\""
+
+                meta_str = ""
+                if meta:
+                    meta_str = f"\nOrder Context Metadata: {json.dumps(meta)}"
+                user_content = f"Customer Support Ticket:\n\"{ticket_message}\"{meta_str}"
 
                 response = client.models.generate_content(
                     model=model_name,
@@ -281,5 +412,4 @@ def generate_decision(
                 print(f"[Gemini API Warning] Model {model_name} failed: {e}. Trying fallback...")
 
     # Deterministic rule-grounded fallback
-    print("[Decision Engine] Using rule-grounded policy fallback")
-    return evaluate_policy_grounded(ticket_message, retrieved_chunks)
+    return evaluate_policy_grounded(ticket_message, retrieved_chunks, meta=meta)

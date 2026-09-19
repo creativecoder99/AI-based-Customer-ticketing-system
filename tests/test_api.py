@@ -22,7 +22,7 @@ def test_submit_ticket_end_to_end(client, alice_auth):
     assert "id" in data
     assert data["user_id"] == alice_auth["user"]["id"]
     assert "decision" in data
-    assert data["decision"]["action"] == "APPROVE_REFUND"
+    assert data["decision"]["action"] in ["APPROVE_REFUND_OR_REPLACEMENT", "APPROVE_REFUND"]
     assert data["decision"]["confidence"] > 0
 
 

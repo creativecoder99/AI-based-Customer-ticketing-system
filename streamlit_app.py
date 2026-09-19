@@ -72,9 +72,21 @@ st.markdown("""
     }
     
     .badge-REQUEST_PHOTOS { background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+    .badge-REQUEST_DEFECT_EVIDENCE { background-color: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
     .badge-APPROVE_REFUND { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+    .badge-APPROVE_REFUND_OR_REPLACEMENT { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+    .badge-APPROVE_REPLACEMENT { background-color: #ccfbf1; color: #115e59; border: 1px solid #99f6e4; }
     .badge-APPROVE_RETURN { background-color: #e0e7ff; color: #3730a3; border: 1px solid #c7d2fe; }
+    .badge-REPLACE_CORRECT_ITEM { background-color: #e0f2fe; color: #075985; border: 1px solid #bae6fd; }
+    .badge-CANCEL_AND_REFUND { background-color: #fef9c3; color: #854d0e; border: 1px solid #fef08a; }
+    .badge-WAIT_AND_TRACK { background-color: #ede9fe; color: #5b21b6; border: 1px solid #ddd6fe; }
+    .badge-OPEN_SHIPPING_INVESTIGATION { background-color: #fae8ff; color: #86198f; border: 1px solid #f5d0fe; }
+    .badge-OFFER_REPLACEMENT_OR_REFUND { background-color: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
+    .badge-CANNOT_CANCEL_AFTER_DISPATCH { background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; }
     .badge-REJECT_REQUEST { background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; }
+    .badge-REJECT_FOOD_RETURN { background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; }
+    .badge-REJECT_OPENED_ITEM { background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; }
+    .badge-REJECT_OUTSIDE_WINDOW { background-color: #ffe4e6; color: #9f1239; border: 1px solid #fecdd3; }
     .badge-EXPEDITE_SHIPPING { background-color: #f3e8ff; color: #6b21a8; border: 1px solid #e9d5ff; }
     .badge-NEEDS_MORE_INFORMATION { background-color: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
     
@@ -177,25 +189,37 @@ with tab_decision:
         selected_preset = None
 
         with preset_cols[0]:
-            if st.button("📦 High-Value Damaged (₹4,500)", use_container_width=True):
-                selected_preset = "I received my ₹4,500 ceramic dinner set yesterday, but the bowls arrived completely shattered inside the box. How do I proceed?"
+            if st.button("📦 Damaged Parcel (₹1,799)", use_container_width=True):
+                selected_preset = "The product was broken when I opened the parcel."
         with preset_cols[1]:
-            if st.button("☕ Low-Value Damaged (₹450)", use_container_width=True):
-                selected_preset = "My delivery arrived 3 hours ago with a chipped coffee mug worth ₹450. I would like a refund please."
+            if st.button("📱 Defective Device (₹3,999)", use_container_width=True):
+                selected_preset = "The device is defective and stops working after a few minutes."
         with preset_cols[2]:
-            if st.button("👟 Late Return (42 Days)", use_container_width=True):
-                selected_preset = "I bought running shoes delivered 42 days ago. I realized I don't use them and want to return them."
+            if st.button("🥫 Food Return Request", use_container_width=True):
+                selected_preset = "I want to return the food product because I changed my mind."
         with preset_cols[3]:
-            if st.button("🚚 Lost Shipment (8 Days)", use_container_width=True):
-                selected_preset = "My courier tracking has had zero scan updates or movement for the past 8 consecutive business days. It seems stuck."
+            if st.button("🚚 Delayed Order (9 Days)", use_container_width=True):
+                selected_preset = "My package has not arrived yet and it is delayed."
 
         default_msg = selected_preset or ""
         ticket_input = st.text_area(
             "Customer Ticket Message",
             value=default_msg,
             height=120,
-            placeholder="Type customer message here (e.g. 'My ₹4,500 dinner set arrived damaged yesterday...')"
+            placeholder="Type customer message here (e.g. 'The product was broken when I opened the parcel...')"
         )
+
+        with st.expander("📋 Optional Order Context Metadata (simulating backend CRM/orders database)"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                ctx_val = st.number_input("Order Value (₹ INR)", min_value=0, value=0, step=100)
+                ctx_issue = st.selectbox("Issue Type", ["", "damaged", "return", "cancellation", "defective", "wrong_item", "shipping_delay"])
+            with c2:
+                ctx_deliv = st.number_input("Days Since Delivery", min_value=-1, value=-1, help="-1 if not delivered or unknown")
+                ctx_ptype = st.selectbox("Product Type", ["", "non_food", "food", "mixed"])
+            with c3:
+                ctx_disp = st.number_input("Days Since Dispatch", min_value=-1, value=-1, help="-1 if not dispatched")
+                ctx_status = st.selectbox("Order Status", ["", "delivered", "dispatched", "processing"])
 
         col_btn, _ = st.columns([1, 4])
         with col_btn:
@@ -207,10 +231,27 @@ with tab_decision:
             else:
                 with st.spinner("Retrieving relevant policy documents and generating AI decision..."):
                     try:
+                        req_body = {"message": ticket_input.strip()}
+                        meta_dict = {}
+                        if ctx_val > 0:
+                            meta_dict["order_value_inr"] = ctx_val
+                        if ctx_issue:
+                            meta_dict["issue_type"] = ctx_issue
+                        if ctx_deliv >= 0:
+                            meta_dict["days_since_delivery"] = ctx_deliv
+                        if ctx_disp >= 0:
+                            meta_dict["days_since_dispatch"] = ctx_disp
+                        if ctx_ptype:
+                            meta_dict["product_type"] = ctx_ptype
+                        if ctx_status:
+                            meta_dict["order_status"] = ctx_status
+                        if meta_dict:
+                            req_body["meta"] = meta_dict
+
                         resp = requests.post(
                             f"{API_URL}/tickets",
                             headers=get_auth_headers(),
-                            json={"message": ticket_input.strip()},
+                            json=req_body,
                             timeout=15
                         )
                         if resp.status_code == 201:

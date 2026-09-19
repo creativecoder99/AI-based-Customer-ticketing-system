@@ -55,11 +55,28 @@ class PolicyRAG:
         return t
 
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text with currency normalization and lightweight stemming."""
+        """Tokenize text with currency normalization, stemming, and synonym expansion."""
         cleaned = text.replace("₹", " inr ").replace("Rs.", " inr ").replace("Rs", " inr ").replace("$", " usd ")
         raw_tokens = re.findall(r"[a-zA-Z0-9]+", cleaned.lower())
         tokens = [self._normalize_token(t) for t in raw_tokens if len(t) > 1]
-        return tokens
+        
+        synonyms = {
+            "shatter": ["damag", "broken"],
+            "crush": ["damag", "broken"],
+            "chipp": ["damag", "broken"],
+            "broken": ["damag"],
+            "unworn": ["unopened", "return"],
+            "transit": ["shipp", "dispatch", "track"],
+            "courier": ["shipp", "dispatch", "track"],
+            "defect": ["defect", "replac"],
+            "flavour": ["wrong", "item"],
+            "flavor": ["wrong", "item"]
+        }
+        expanded = list(tokens)
+        for t in tokens:
+            if t in synonyms:
+                expanded.extend(synonyms[t])
+        return expanded
 
     def load_and_index(self) -> None:
         """Load markdown files from knowledge base directory, split into sections, and build index."""
@@ -95,11 +112,12 @@ class PolicyRAG:
                 chunk_id = f"{filename}_{chunk_idx}"
                 chunk_idx += 1
 
+                # Repeat doc_title in content to ensure strong topic alignment
                 self.chunks.append(DocumentChunk(
                     chunk_id=chunk_id,
                     source=filename,
                     title=f"{doc_title} - {section_title}",
-                    content=f"Document: {filename}\nSection: {section_title}\n{body}"
+                    content=f"Policy: {doc_title} {doc_title} {filename}\nSection: {section_title}\n{body}"
                 ))
 
         self._build_local_vector_index()

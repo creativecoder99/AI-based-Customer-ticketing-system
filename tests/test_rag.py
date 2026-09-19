@@ -12,6 +12,9 @@ def test_rag_knowledge_base_indexing():
     assert "returns.md" in sources
     assert "refunds.md" in sources
     assert "shipping.md" in sources
+    assert "cancellations.md" in sources
+    assert "defective_products.md" in sources
+    assert "wrong_item.md" in sources
 
 
 def test_rag_retrieval_damaged_goods():

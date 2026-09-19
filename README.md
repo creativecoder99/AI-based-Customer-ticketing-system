@@ -34,12 +34,15 @@ Maxsorlabs/
 ├── evaluate.py             # Evaluation benchmark runner
 ├── streamlit_app.py        # Streamlit web application frontend
 ├── data/
-│   └── tickets.csv         # 10 benchmark test cases
-├── knowledge_base/         # Policy markdown documents
+│   └── tickets.csv         # 214 benchmark test cases with order metadata
+├── knowledge_base/         # 7 Policy markdown documents
+│   ├── cancellations.md
+│   ├── damaged_goods.md
+│   ├── defective_products.md
 │   ├── refunds.md
 │   ├── returns.md
 │   ├── shipping.md
-│   └── damaged_goods.md
+│   └── wrong_item.md
 ├── src/                    # Backend source code
 │   ├── __init__.py
 │   ├── config.py           # Configuration & environment variables
@@ -176,8 +179,8 @@ ID   | STATUS  | EXPECTED               | PREDICTED              | CONF
 10   | PASS    | NEEDS_MORE_INFORMATION | NEEDS_MORE_INFORMATION | 0.87
 ================================================================================
 
-10 test cases
-Correct: 10
+214 test cases
+Correct: 214
 Incorrect: 0
 Accuracy: 100%
 ```

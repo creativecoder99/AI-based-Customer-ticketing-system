@@ -85,7 +85,7 @@ Foreign keys are enforced per-connection using `PRAGMA foreign_keys = ON;`.
 ---
 
 ### 2.3 RAG Retrieval Pipeline Mechanics
-1. **Document Parsing:** Loads markdown files from `knowledge_base/` (`refunds.md`, `returns.md`, `shipping.md`, `damaged_goods.md`).
+1. **Document Parsing:** Loads markdown files from `knowledge_base/` (`cancellations.md`, `damaged_goods.md`, `defective_products.md`, `refunds.md`, `returns.md`, `shipping.md`, `wrong_item.md`).
 2. **Semantic Section Chunking:** Decomposes markdown files on heading boundaries (`# `, `## `), maintaining document title and section headers.
 3. **Vector Transformation:**
    - Text is normalized (currency conversion `₹`/`$` -> `inr`/`usd`, lowercase tokenization, lightweight stemming).

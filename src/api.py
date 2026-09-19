@@ -71,6 +71,7 @@ class UserResponse(BaseModel):
 
 class TicketCreateRequest(BaseModel):
     message: str = Field(..., min_length=3, description="Support ticket inquiry or issue description")
+    meta: Optional[Dict[str, Any]] = Field(default=None, description="Optional order metadata context (value, delivery days, dispatch days, status, etc.)")
 
 
 class DecisionResponse(BaseModel):
@@ -173,7 +174,11 @@ def submit_ticket(
     retrieved_chunks = rag_pipeline.retrieve(request.message, top_k=3)
 
     # 3. AI decision generation & validation
-    decision_out: DecisionOutput = generate_decision(request.message, retrieved_chunks)
+    decision_out: DecisionOutput = generate_decision(
+        ticket_message=request.message,
+        retrieved_chunks=retrieved_chunks,
+        meta=request.meta
+    )
 
     # 4. Persist decision in SQLite
     saved_decision = create_decision(
